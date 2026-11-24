@@ -6,11 +6,16 @@ Obrigado por testar! O Cena é um editor de roteiro minimalista, com o Claude in
 
 1. Baixe o `.dmg` certo para o seu Mac: **apple-silicon** para Macs com chip M1, M2, M3 ou M4; **intel** para os anteriores (menu  → Sobre Este Mac mostra qual é o seu).
 2. Abra o `.dmg` e arraste o **Cena** para a pasta **Aplicativos**.
-3. **Na primeira vez**, abra com **clique direito no Cena → Abrir → Abrir**. O app ainda não tem assinatura de desenvolvedor da Apple, por isso o macOS pergunta uma vez.
-   Se aparecer "o Cena está danificado", abra o Terminal e rode:
+3. **Na primeira vez**, o macOS avisa que "não pôde verificar se o Cena está livre de malware". É o aviso padrão para apps sem a assinatura paga de desenvolvedor da Apple. Para liberar, uma única vez:
+   - clique em **OK** (não em "Mover para o Lixo");
+   - abra **Ajustes do Sistema → Privacidade e Segurança**, role até o fim e clique em **Abrir Mesmo Assim** ao lado de "O Cena foi bloqueado";
+   - confirme com a senha do Mac.
+
+   Ou, no Terminal, rode o comando abaixo e abra o Cena normalmente:
    ```bash
-   xattr -cr /Applications/Cena.app
+   xattr -dr com.apple.quarantine /Applications/Cena.app
    ```
+   O mesmo comando resolve se aparecer "o Cena está danificado e não pode ser aberto".
 
 ## Usar o Claude
 

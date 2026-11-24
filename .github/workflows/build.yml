@@ -61,5 +61,5 @@ jobs:
         with:
           files: pacotes/*
           body: |
-            **macOS:** baixe o .dmg do seu Mac (apple-silicon para M1/M2/M3/M4, intel para os anteriores), arraste o Cena para Aplicativos e, na primeira vez, abra com clique direito → Abrir.
+            **macOS:** baixe o .dmg do seu Mac (apple-silicon para M1/M2/M3/M4, intel para os anteriores), arraste o Cena para Aplicativos. Na primeira vez o macOS avisa que não pôde verificar o app: clique em OK e vá em Ajustes do Sistema → Privacidade e Segurança → Abrir Mesmo Assim (ou rode no Terminal: xattr -dr com.apple.quarantine /Applications/Cena.app). Detalhes em TESTADORES.md.
             **Linux:** .deb (Ubuntu, Mint, Debian) ou AppImage (qualquer distribuição).
