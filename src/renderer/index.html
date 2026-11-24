@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'">
+  <title>Cena</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="top">
+    <button id="docname" title="Renomear"></button>
+    <button id="hint-k" title="Comandos"></button>
+  </header>
+  <main id="page"><div id="editor"></div></main>
+  <aside id="panel" aria-label="Claude"></aside>
+  <footer id="status" title=""></footer>
+  <div id="review" role="toolbar" aria-label="Alterações do Claude"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

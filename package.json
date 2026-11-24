@@ -1,0 +1,94 @@
+{
+  "name": "cena",
+  "version": "1.2.1",
+  "description": "Cena — editor de roteiro minimalista para Linux, com Fountain nativo, nuvem e Claude",
+  "type": "module",
+  "main": "src/main/main.js",
+  "license": "GPL-3.0-only",
+  "author": {
+    "name": "Cena",
+    "email": "cena@localhost"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "start": "npm run build && electron .",
+    "web": "npm run build && node src/server/web.js",
+    "test": "node --test test/*.test.js",
+    "dist": "npm run build && electron-builder --linux AppImage deb",
+    "dist:mac": "npm run build && electron-builder --mac dir --x64 --arm64 && bash scripts/mac-dmg.sh"
+  },
+  "build": {
+    "appId": "app.cena.editor",
+    "productName": "Cena",
+    "files": [
+      "src/**/*",
+      "dist/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "category": "Office;TextEditor",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "mimeTypes": [
+        "text/x-fountain"
+      ],
+      "fileAssociations": [
+        {
+          "ext": "fountain",
+          "name": "Roteiro Fountain",
+          "mimeType": "text/x-fountain"
+        }
+      ],
+      "icon": "build/icon.png",
+      "maintainer": "Cena <cena@localhost>",
+      "syncDesktopName": true
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "target": [
+        "dir"
+      ],
+      "identity": null,
+      "fileAssociations": [
+        {
+          "ext": "fountain",
+          "name": "Roteiro Fountain",
+          "role": "Editor"
+        }
+      ],
+      "extendInfo": {
+        "NSHumanReadableCopyright": "Cena"
+      }
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.12.0",
+    "@fontsource/courier-prime": "^5.3.0",
+    "dictionary-en": "^4.0.0",
+    "dictionary-pt": "^4.0.0",
+    "pdfkit": "^0.21.0"
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.4",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lint": "^6.9.8",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "electron": "^45.4.1",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2"
+  },
+  "bin": {
+    "cena-web": "src/server/web.js"
+  },
+  "homepage": "http://localhost/cena",
+  "desktopName": "cena.desktop"
+}
