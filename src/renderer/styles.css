@@ -226,3 +226,43 @@ details summary { cursor: pointer; color: var(--muted); }
 #review.show { display: flex; }
 body.panel-open #review { left: calc((100% - 360px) / 2); }
 .chat-foot { display: flex; flex-direction: column; gap: 4px; }
+
+/* ---------- modo texto (bíblia da série) ---------- */
+body.plain-mode #editor .cm-scroller { font-family: var(--ui-font); font-size: 16px; line-height: 1.65; }
+body.plain-mode #editor .cm-content { max-width: 68ch; }
+.ln-mdh { font-weight: 700; font-size: 1.15em; padding-top: .6em !important; }
+
+/* ---------- projeto (série): barra lateral oculta ---------- */
+#sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: 270px; background: var(--panel); border-right: 1px solid var(--line); transform: translateX(-100%); transition: transform .2s; z-index: 7; display: flex; flex-direction: column; gap: 6px; padding: 12px 10px 14px; overflow: auto; }
+body.sidebar-open #sidebar { transform: none; }
+body.sidebar-open #page { left: 270px; }
+#page { left: 0; transition: left .2s, right .2s; }
+#sidebar header { display: flex; justify-content: space-between; align-items: flex-start; padding: 0 4px 6px; }
+#sidebar .proj-kind { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+#sidebar .proj-name { font-weight: 600; font-size: 15px; word-break: break-word; }
+#sidebar .eps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+#sidebar .ep { display: flex; align-items: center; border-radius: 7px; }
+#sidebar .ep:hover, #sidebar .ep.active { background: var(--bg); }
+#sidebar .ep.active .ep-title { font-weight: 600; }
+#sidebar .ep-open { flex: 1; display: flex; gap: 8px; align-items: baseline; border: 0; text-align: left; padding: 6px 6px; min-width: 0; }
+#sidebar .ep-n { font-family: var(--script-font); color: var(--muted); font-size: 12px; }
+#sidebar .ep-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#sidebar .ep-pages { color: var(--muted); font-size: 11px; }
+#sidebar .ep-actions { display: none; padding-right: 2px; }
+#sidebar .ep:hover .ep-actions { display: flex; }
+#sidebar .ep-actions .icon { font-size: 13px; padding: 2px 4px; }
+#sidebar .add { border-style: dashed; color: var(--muted); margin-top: 4px; }
+#sidebar .doc { border: 0; text-align: left; padding: 6px; border-radius: 7px; color: var(--fg); }
+#sidebar .doc::before { content: '¶ '; color: var(--muted); }
+#sidebar .doc.active, #sidebar .doc:hover { background: var(--bg); }
+#sidebar .grow { flex: 1; }
+#sidebar .side-actions { display: flex; flex-direction: column; gap: 5px; }
+#sidebar .side-actions button { text-align: left; }
+#sidebar-tab { position: fixed; top: 6px; left: 8px; z-index: 6; border: 0; color: var(--muted); font-size: 15px; opacity: .55; display: none; }
+body.has-project #sidebar-tab { display: block; }
+body.sidebar-open #sidebar-tab, body.typing #sidebar-tab { opacity: 0; pointer-events: none; }
+.history .file.cur { font-weight: 600; }
+.history details summary { padding: 4px 0; }
+.draft-out .row { margin-bottom: 8px; }
+.compare { line-height: 1.55; max-height: 55vh; overflow: auto; } .compare h4 { margin: 10px 0 4px; } .compare ul { padding-left: 18px; }
+@media (max-width: 900px) { body.sidebar-open #page { left: 0; } #sidebar { width: 85vw; } }

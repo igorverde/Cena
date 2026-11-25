@@ -15,7 +15,7 @@ const BD_CATS = [
   ['sound', 'Som e música'], ['stunts', 'Dublês'],
 ];
 
-export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus }) {
+export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus, openEpisode, flush }) {
   const state = {
     tab: 'notas',
     notes: [], summary: '', notesFor: null, analyzing: false, lastSceneHash: null, lastEdit: 0,
@@ -38,7 +38,8 @@ export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus
     running.set(key, id);
     state.busy[key] = true; render();
     try {
-      return await call(name, args, onEvent, id);
+      if (name.startsWith('claude.') && getDoc().project) await flush?.(); // a série é lida do disco
+      return await call(name, { path: getDoc().path, ...args }, onEvent, id);
     } catch (e) {
       if (e.code !== 'aborted') toast(e.message, { error: true, ms: 6000 });
       return null;
@@ -86,6 +87,8 @@ export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus
   // chamado pelo app a cada edição: agenda a análise em tempo real da cena atual
   function onEdit() {
     const s = getSettings();
+    if (state.seriesStats) state.seriesStats.stale = true;
+    if (getDoc().plain) return; // bíblia: sem análise de cena em tempo real
     if (s.claude.realtime && hasKey()) scheduleRealtimeWith((s.claude.idleSeconds || 20) * 1000);
   }
   let rtTimer;
@@ -96,6 +99,31 @@ export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus
       if (!s.claude.realtime || !hasKey() || state.busy.notes) return;
       analyzeScene({ auto: true });
     }, ms);
+  }
+
+  async function analyzeSeries() {
+    if (!getDoc().project) { toast('Abra um projeto (série) para analisar a temporada.'); return; }
+    state.analyzing = true; setTab('notas');
+    onStatus?.('Claude lendo a temporada…');
+    const res = await run('claude.analyze', { text: getDoc().text, scope: 'series' }, 'notes');
+    onStatus?.('');
+    state.analyzing = false;
+    if (res) { state.notes = res.data.notes; state.summary = res.data.summary; state.notesFor = `Temporada — ${getDoc().project.name}`; }
+    render();
+  }
+
+  // nota de outro episódio: abre o episódio e depois procura o trecho
+  async function openNote(n) {
+    const p = getDoc().project;
+    if (p && n.episode) {
+      const cur = p.episodes.find((e) => e.path === getDoc().path);
+      if (!cur || String(cur.n) !== String(n.episode).replace(/\D/g, '')) {
+        const ok = await openEpisode?.(String(n.episode).replace(/\D/g, ''));
+        if (!ok) { toast(`Episódio ${n.episode} não encontrado.`); return; }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    jumpToQuote(n.quote);
   }
 
   function jumpToQuote(q) {
@@ -115,15 +143,16 @@ export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus
         'Tempo real'),
       h('span', { class: 'grow' }),
       h('button', { onclick: () => analyzeScene(), disabled: state.busy.notes }, 'Esta cena'),
-      h('button', { onclick: analyzeAll, disabled: state.busy.notes }, 'Roteiro todo'));
+      h('button', { onclick: analyzeAll, disabled: state.busy.notes }, getDoc().project ? 'Episódio' : 'Roteiro todo'),
+      getDoc().project ? h('button', { onclick: analyzeSeries, disabled: state.busy.notes, title: 'Continuidade, arcos e ganchos entre episódios' }, 'Temporada') : null);
     const list = h('div', { class: 'notes' });
     if (state.busy.notes) list.append(h('p', { class: 'muted pulse' }, 'Lendo… ', h('button', { class: 'link', onclick: () => cancel('notes') }, 'cancelar')));
     if (!hasKey()) list.append(h('p', { class: 'muted' }, 'Configure o Claude em Configurações (Ctrl+,) para ativar a análise.'));
     if (state.notesFor) list.append(h('p', { class: 'muted small' }, state.notesFor));
     if (state.summary) list.append(h('p', { class: 'summary' }, state.summary));
     for (const n of state.notes) {
-      list.append(h('article', { class: `note sev-${n.severity}`, onclick: () => jumpToQuote(n.quote), title: 'Ir para o trecho' },
-        h('div', { class: 'meta' }, `${SEV[n.severity] || ''} ${KIND[n.kind] || n.kind}${n.scene ? ` · cena ${n.scene}` : ''}`),
+      list.append(h('article', { class: `note sev-${n.severity}`, onclick: () => openNote(n), title: 'Ir para o trecho' },
+        h('div', { class: 'meta' }, `${SEV[n.severity] || ''} ${KIND[n.kind] || n.kind}${n.episode ? ` · ep. ${n.episode}` : ''}${n.scene ? ` · cena ${n.scene}` : ''}`),
         h('p', {}, n.note),
         n.suggestion ? h('p', { class: 'sugg' }, n.suggestion) : null));
     }
@@ -184,17 +213,50 @@ export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus
   let listView = 'cenas';
   function renderLists() {
     const st = localLists();
-    const views = [['cenas', 'Cenas'], ['personagens', 'Personagens'], ['locacoes', 'Locações'], ...(state.breakdown ? [['decupagem', 'Decupagem'], ...BD_CATS.map(([k, l]) => [`bd:${k}`, l])] : [])];
+    const views = [['cenas', 'Cenas'], ['personagens', 'Personagens'], ['locacoes', 'Locações'],
+      ...(getDoc().project ? [['serie:personagens', 'Temporada: personagens × episódios'], ['serie:locacoes', 'Temporada: locações × episódios']] : []),
+      ...(state.breakdown ? [['decupagem', 'Decupagem'], ...BD_CATS.map(([k, l]) => [`bd:${k}`, l])] : [])];
+    if (listView.startsWith('serie:') && !getDoc().project) listView = 'cenas';
     const sel = h('select', { onchange: (e) => { listView = e.target.value; render(); } }, views.map(([v, l]) => h('option', { value: v, selected: v === listView }, l)));
     const head = h('div', { class: 'row' }, sel, h('span', { class: 'grow' }),
       state.busy.breakdown ? h('button', { onclick: () => cancel('breakdown') }, 'Cancelar') : h('button', { onclick: makeBreakdown, title: 'Elenco, objetos, figurino, efeitos… por cena' }, state.breakdown ? 'Refazer decupagem' : 'Decupar com Claude'));
-    const { columns, rows, title } = listTable(st, listView);
+    if (listView.startsWith('serie:') && (!state.seriesStats || state.seriesStats.dir !== getDoc().project.dir || state.seriesStats.stale)) {
+      const dir = getDoc().project.dir;
+      state.seriesStats = { dir, loading: true, eps: [] };
+      flush?.().then(() => call('project.stats', { dir })).then((eps) => { state.seriesStats = { dir, eps }; render(); }).catch((e) => toast(e.message, { error: true }));
+    }
+    const { columns, rows, title } = listView.startsWith('serie:') ? seriesTable(listView) : listTable(st, listView);
     const table = tableEl(columns, rows, (r) => r.__line != null && goTo(getView(), getView().state.doc.line(r.__line + 1).from));
     const exp = h('div', { class: 'row end' },
       h('button', { onclick: () => exportCSV(title, columns, rows) }, 'CSV'),
       h('button', { onclick: () => exportPDF(title, columns, rows) }, 'PDF'));
     return [head, state.busy.breakdown ? h('p', { class: 'muted pulse' }, 'Decupando o roteiro inteiro… isso leva um ou dois minutos.') : null,
       h('p', { class: 'muted small' }, `${st.pages} pág. · ~${st.minutes} min · ${st.scenes.length} cenas · ${st.characters.length} personagens`), table, exp];
+  }
+
+  // tabelas da temporada: em que episódios cada personagem/locação aparece
+  function seriesTable(v) {
+    const eps = state.seriesStats?.eps || [];
+    const epCols = eps.map((e) => ({ key: `e${e.n}`, label: String(e.n).padStart(2, '0'), weight: 0.35 }));
+    if (v === 'serie:personagens') {
+      const m = new Map();
+      for (const e of eps) for (const c of e.characters) {
+        const cur = m.get(c.name) || { name: c.name, total: 0, eps: 0 };
+        cur[`e${e.n}`] = c.speeches || '·'; cur.total += c.speeches; cur.eps++;
+        m.set(c.name, cur);
+      }
+      return { title: 'Personagens na temporada', columns: [{ key: 'name', label: 'Personagem', weight: 2 }, ...epCols, { key: 'eps', label: 'Eps.', weight: 0.5 }, { key: 'total', label: 'Falas', weight: 0.6 }],
+        rows: [...m.values()].sort((a, b) => b.eps - a.eps || b.total - a.total) };
+    }
+    const m = new Map();
+    for (const e of eps) for (const l of e.locations) {
+      const k = l || '(sem locação)';
+      const cur = m.get(k) || { loc: k, eps: 0 };
+      if (!cur[`e${e.n}`]) { cur[`e${e.n}`] = '●'; cur.eps++; }
+      m.set(k, cur);
+    }
+    return { title: 'Locações na temporada', columns: [{ key: 'loc', label: 'Locação', weight: 2.5 }, ...epCols, { key: 'eps', label: 'Eps.', weight: 0.5 }],
+      rows: [...m.values()].sort((a, b) => b.eps - a.eps || a.loc.localeCompare(b.loc, 'pt-BR')) };
   }
 
   function listTable(st, v) {
@@ -451,7 +513,7 @@ export function createClaudePanel({ root, getView, getDoc, getSettings, onStatus
   render();
 
   return {
-    setTab, render, onEdit, analyzeScene, analyzeAll, grammar, makeBreakdown, makeSchedule, loadProduction, editPrompt, editText,
+    setTab, render, onEdit, analyzeScene, analyzeAll, analyzeSeries, grammar, makeBreakdown, makeSchedule, loadProduction, editPrompt, editText,
     focusChat: () => { setTab('conversa'); setTimeout(() => chatInput?.focus(), 0); },
   };
 }

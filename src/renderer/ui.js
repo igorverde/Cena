@@ -32,13 +32,15 @@ export function modal(title, body, { wide = false, onClose } = {}) {
   const back = h('div', { class: 'modal-back' });
   let resolve;
   const done = new Promise((r) => { resolve = r; });
-  const close = (v) => { back.remove(); onClose?.(); resolve(v); };
+  // Esc fecha a janela do topo mesmo se o foco tiver saído dela
+  const onKey = (e) => { if (e.key === 'Escape' && document.querySelector('.modal-back:last-of-type') === back) { e.stopPropagation(); e.preventDefault(); close(null); } };
+  const close = (v) => { document.removeEventListener('keydown', onKey, true); back.remove(); onClose?.(); resolve(v); };
+  document.addEventListener('keydown', onKey, true);
   const box = h('div', { class: `modal ${wide ? 'wide' : ''}`, role: 'dialog', 'aria-label': title },
     h('header', {}, h('h2', {}, title), h('button', { class: 'icon', title: 'Fechar (Esc)', onclick: () => close(null) }, '×')),
     body);
   back.append(box);
   back.addEventListener('mousedown', (e) => { if (e.target === back) close(null); });
-  back.addEventListener('keydown', (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(null); } });
   document.body.append(back);
   setTimeout(() => (box.querySelector('[autofocus], input, textarea, select, button.primary') || box).focus(), 0);
   return { el: box, close, done };

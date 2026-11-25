@@ -10,6 +10,8 @@ import { CloudSync, sha } from './cloud.js';
 import * as claude from './claude.js';
 import { toPDF, tablePDF } from '../core/pdf.js';
 import { toFDX } from '../core/fdx.js';
+import { stats as scriptStats } from '../core/stats.js';
+import * as proj from './project.js';
 
 const require = createRequire(import.meta.url);
 const pkg = JSON.parse(fss.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
@@ -37,6 +39,7 @@ const DEFAULTS = {
   claude: { provider: 'subscription', cliPath: '', apiKey: '', model: claude.DEFAULT_MODEL, realtime: true, idleSeconds: 20, directEdits: false },
   cloud: { provider: 'none', webdav: { url: '', username: '', password: '' }, folder: '' },
   recent: [],
+  recentProjects: [],
 };
 
 function deepMerge(a, b) {
@@ -113,6 +116,37 @@ export function createBackend({ secrets = null, mode = 'web', dirs = {} } = {}) 
     await saveSettings();
   }
 
+  async function touchRecentProject(dir) {
+    const s = await loadSettings();
+    s.recentProjects = [path.resolve(dir), ...(s.recentProjects || []).filter((r) => r !== path.resolve(dir))].slice(0, 10);
+    await saveSettings();
+  }
+  // envia o cena.json e a bíblia para a nuvem depois de mudanças no projeto
+  async function pushProjectMeta(dir) {
+    const s = await loadSettings();
+    if (s.cloud.provider === 'none') return;
+    const files = [path.join(dir, proj.MANIFEST)];
+    const p = await proj.readProject(dir);
+    if (p.bible) files.push(p.bible);
+    for (const f of files) await cloud.push(s.cloud, f, await fs.readFile(f, 'utf8')).catch(() => {});
+  }
+  async function openProject(dir) {
+    const p = await proj.readProject(dir);
+    const s = await loadSettings();
+    for (const e of p.episodes) {
+      try { e.pages = scriptStats(await fs.readFile(e.path, 'utf8'), { paper: s.paper, lang: s.lang }).pages; } catch { e.pages = 0; }
+    }
+    await touchRecentProject(dir);
+    return p;
+  }
+  // contexto da série para o Claude: obra inteira, ou só a bíblia (análise em tempo real)
+  async function withSeries(args, full = true) {
+    if (!args.path) return args;
+    const dir = proj.projectOf(args.path);
+    if (!dir) return args;
+    return { ...args, series: await proj.seriesContext(dir, { skipPath: args.path, full }) };
+  }
+
   const handlers = {
     async 'app.info'() {
       return { mode, version: pkg.version, library, platform: process.platform, envKey: !!process.env.ANTHROPIC_API_KEY };
@@ -160,13 +194,22 @@ export function createBackend({ secrets = null, mode = 'web', dirs = {} } = {}) 
       }
       const recent = [];
       for (const r of s.recent) { try { const st = await fs.stat(r); recent.push({ path: r, name: path.basename(r), mtime: st.mtimeMs }); } catch { /* removido */ } }
-      return { library, files: files.sort((a, b) => b.mtime - a.mtime), recent };
+      const projects = [];
+      for (const d of await fs.readdir(library, { withFileTypes: true })) {
+        if (!d.isDirectory() || !proj.isProject(path.join(library, d.name))) continue;
+        const st = await fs.stat(path.join(library, d.name, proj.MANIFEST));
+        projects.push({ dir: path.join(library, d.name), name: d.name, mtime: st.mtimeMs });
+      }
+      for (const r of s.recentProjects || []) if (!projects.some((x) => x.dir === r) && proj.isProject(r)) projects.push({ dir: r, name: path.basename(r), mtime: (await fs.stat(path.join(r, proj.MANIFEST))).mtimeMs });
+      return { library, files: files.sort((a, b) => b.mtime - a.mtime), recent, looseRecent: recent.filter((r) => !proj.projectOf(r.path)), projects: projects.sort((a, b) => b.mtime - a.mtime) };
     },
     async 'doc.read'({ path: p }) {
       const text = await fs.readFile(p, 'utf8');
       const st = await fs.stat(p);
       await touchRecent(p);
-      return { path: path.resolve(p), name: path.basename(p), text, mtime: st.mtimeMs };
+      const project = proj.projectOf(p);
+      if (project) await touchRecentProject(project);
+      return { path: path.resolve(p), name: path.basename(p), text, mtime: st.mtimeMs, project };
     },
     async 'doc.new'({ title } = {}) {
       await fs.mkdir(library, { recursive: true });
@@ -212,6 +255,51 @@ export function createBackend({ secrets = null, mode = 'web', dirs = {} } = {}) 
     async 'history.read'({ path: p, id }) {
       if (!/^\d+\.fountain$/.test(id)) throw new Error('Versão inválida.');
       return { text: await fs.readFile(path.join(histDirFor(p), id), 'utf8') };
+    },
+
+    // ---- projetos (séries) ----
+    async 'project.of'({ path: p }) { return proj.projectOf(p); },
+    async 'project.open'({ dir }) { return openProject(dir); },
+    async 'project.create'({ name, episodes = 1 }) {
+      await fs.mkdir(library, { recursive: true });
+      const p = await proj.createProject(library, name, { episodes });
+      pushProjectMeta(p.dir);
+      return openProject(p.dir);
+    },
+    async 'project.adopt'({ dir }) { const p = await proj.adoptFolder(dir); pushProjectMeta(p.dir); return openProject(p.dir); },
+    async 'project.addEpisode'({ dir, title }) { const r = await proj.addEpisode(dir, title); pushProjectMeta(dir); return r; },
+    async 'project.renameEpisode'({ dir, file, title }) {
+      const r = await proj.renameEpisode(dir, file, title);
+      const s = await loadSettings();
+      s.recent = s.recent.map((x) => (x === path.join(dir, file) ? r.path : x)); await saveSettings();
+      pushProjectMeta(dir);
+      return r;
+    },
+    async 'project.reorder'({ dir, files }) { const moved = await proj.reorder(dir, files); pushProjectMeta(dir); return { moved }; },
+    async 'project.archive'({ dir, file }) { const r = await proj.archiveEpisode(dir, file); pushProjectMeta(dir); return r; },
+    async 'project.saveDraft'({ dir, label }) {
+      const r = await proj.saveDraft(dir, label);
+      const s = await loadSettings();
+      if (s.cloud.provider !== 'none') for (const f of r.files) await cloud.push(s.cloud, path.join(r.dir, f), await fs.readFile(path.join(r.dir, f), 'utf8')).catch(() => {});
+      return { name: r.name, files: r.files };
+    },
+    async 'project.drafts'({ dir }) { return proj.listDrafts(dir); },
+    async 'project.readDraft'({ dir, draft, file }) { return { text: await proj.readDraftFile(dir, draft, file) }; },
+    async 'project.stats'({ dir }) {
+      const s = await loadSettings();
+      const p = await proj.readProject(dir);
+      const out = [];
+      for (const e of p.episodes) {
+        const st = scriptStats(await fs.readFile(e.path, 'utf8'), { paper: s.paper, lang: s.lang });
+        out.push({ n: e.n, title: e.title, file: e.file, path: e.path, pages: st.pages, scenes: st.scenes.length, characters: st.characters, locations: st.locations });
+      }
+      return out;
+    },
+    async 'project.exportPdf'({ dir }) {
+      const s = await loadSettings();
+      const text = await proj.seasonFountain(dir);
+      const buf = await toPDF(text, { paper: s.paper, lang: s.lang, sceneNumbers: s.sceneNumbers, boldScenes: s.boldScenes, font: s.font });
+      return { mime: 'application/pdf', ext: 'pdf', base64: buf.toString('base64'), name: path.basename(dir) };
     },
 
     // listas de produção e plano de filmagem gerados, guardados por documento
@@ -265,12 +353,13 @@ export function createBackend({ secrets = null, mode = 'web', dirs = {} } = {}) 
       return { matches: j.matches.map((m) => ({ offset: m.offset, length: m.length, message: m.message, replacements: m.replacements.slice(0, 4).map((r) => r.value), rule: m.rule?.issueType })) };
     },
 
-    async 'claude.analyze'(args, ctx) { const s = await loadSettings(); return claude.analyze(claudeCfg(s), { ...args, paper: s.paper, lang: s.lang }, ctx); },
+    async 'claude.analyze'(args, ctx) { const s = await loadSettings(); return claude.analyze(claudeCfg(s), { ...(await withSeries(args, args.scope !== 'scene')), paper: s.paper, lang: s.lang }, ctx); },
     async 'claude.grammar'(args, ctx) { const s = await loadSettings(); return claude.grammar(claudeCfg(s), args, ctx); },
-    async 'claude.breakdown'(args, ctx) { const s = await loadSettings(); return claude.breakdown(claudeCfg(s), { ...args, paper: s.paper, lang: s.lang }, ctx); },
-    async 'claude.schedule'(args, ctx) { const s = await loadSettings(); return claude.schedule(claudeCfg(s), { ...args, paper: s.paper, lang: s.lang }, ctx); },
-    async 'claude.chat'(args, ctx) { const s = await loadSettings(); return claude.chat(claudeCfg(s), args, ctx); },
-    async 'claude.edit'(args, ctx) { const s = await loadSettings(); return claude.edit(claudeCfg(s), args, ctx); },
+    async 'claude.breakdown'(args, ctx) { const s = await loadSettings(); return claude.breakdown(claudeCfg(s), { ...(await withSeries(args, false)), paper: s.paper, lang: s.lang }, ctx); },
+    async 'claude.schedule'(args, ctx) { const s = await loadSettings(); return claude.schedule(claudeCfg(s), { ...(await withSeries(args, false)), paper: s.paper, lang: s.lang }, ctx); },
+    async 'claude.chat'(args, ctx) { const s = await loadSettings(); return claude.chat(claudeCfg(s), await withSeries(args), ctx); },
+    async 'claude.edit'(args, ctx) { const s = await loadSettings(); return claude.edit(claudeCfg(s), await withSeries(args), ctx); },
+    async 'claude.compare'(args, ctx) { const s = await loadSettings(); return claude.compare(claudeCfg(s), await withSeries(args, false), ctx); },
     async 'claude.check'(args, ctx) { const s = await loadSettings(); return claude.check(claudeCfg(s), ctx); },
     async 'call.cancel'({ id }) { aborts.get(id)?.abort(); return { ok: true }; },
   };

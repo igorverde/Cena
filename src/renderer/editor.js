@@ -17,9 +17,14 @@ import { inlineMarkup, elementMarkers, titleKey } from '../core/markup.js';
 // ---------------------------------------------------------------------------
 // Tipos de linha
 
+// modo 'plain' (bíblia da série, .md): texto corrido, sem elementos de roteiro
+function classify(text) {
+  if (editorConfig.mode === 'plain') return text.split('\n').map((l) => (/^#{1,6}\s/.test(l) ? 'mdh' : l.trim() ? 'plain' : 'empty'));
+  return classifyLines(text);
+}
 const typesField = StateField.define({
-  create: (s) => classifyLines(s.doc.toString()),
-  update: (v, tr) => (tr.docChanged ? classifyLines(tr.state.doc.toString()) : v),
+  create: (s) => classify(s.doc.toString()),
+  update: (v, tr) => (tr.docChanged ? classify(tr.state.doc.toString()) : v),
 });
 
 // Tipo "pendente" de uma linha vazia, escolhido com Tab/Enter antes de digitar
@@ -296,7 +301,7 @@ async function lintSource(view) {
   }
 
   // avisos de formatação (exceto na linha em edição)
-  for (const w of formatWarnings(doc.toString())) {
+  for (const w of editorConfig.mode === 'plain' ? [] : formatWarnings(doc.toString())) {
     const ln = w.line + 1;
     if (ln === cursorLine || ln > doc.lines) continue;
     const line = doc.line(ln);
@@ -354,7 +359,7 @@ function autocorrectInput(view, from, to, text) {
       return true;
     }
   }
-  if (!['action', 'dialogue', 'parenthetical'].includes(t)) return false;
+  if (!['action', 'dialogue', 'parenthetical', 'plain'].includes(t)) return false;
   if (!/^[\s,.;:!?)"”…]$/.test(text)) return false;
   const before = line.text.slice(0, from - line.from);
   const m = before.match(/([\p{L}\p{M}]+)$/u);
@@ -447,6 +452,7 @@ function screenplayEnter(view) {
 const CYCLE = ['action', 'character', 'scene', 'transition'];
 
 function screenplayTab(view, dir = 1) {
+  if (editorConfig.mode === 'plain') { if (dir > 0) view.dispatch(view.state.replaceSelection('  ')); return true; }
   if (completionStatus(view.state) === 'active') return acceptCompletion(view);
   const { state } = view;
   const line = state.doc.lineAt(state.selection.main.head);
@@ -490,6 +496,7 @@ function screenplayTab(view, dir = 1) {
 // Autocompletar: personagens, locações, períodos e transições
 
 function completions(ctx) {
+  if (editorConfig.mode === 'plain') return null;
   const { state, pos } = ctx;
   const line = state.doc.lineAt(pos);
   const t = lineType(state, line.number);

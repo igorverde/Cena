@@ -1,11 +1,12 @@
 // Cena — aplicação (interface).
 import { platform, call, saveBytes, pickFile } from './platform.js';
-import { h, toast, modal, confirmBox, prompt, debounce, timeAgo } from './ui.js';
+import { h, toast, modal, confirmBox, prompt, debounce, timeAgo, miniMarkdown } from './ui.js';
 import {
   createEditor, setDoc, editorConfig, relint, clearSpellCache, setPageBreaks,
   getSuggestions, acceptAll, rejectAll, nextSuggestion, currentScene, sceneRanges, goTo,
 } from './editor.js';
 import { createClaudePanel } from './claude-panel.js';
+import { createSidebar } from './sidebar.js';
 import { Speller } from '../core/spell.js';
 import { fromFDX } from '../core/fdx.js';
 import { fixFormatting } from '../core/format.js';
@@ -43,9 +44,25 @@ async function init() {
   app.panel = createClaudePanel({
     root: $('#panel'),
     getView: () => app.view,
-    getDoc: () => ({ ...app.doc, text: app.view.state.doc.toString() }),
+    getDoc: () => ({ ...app.doc, text: app.view.state.doc.toString(), project: app.project, plain: editorConfig.mode === 'plain' }),
     getSettings: () => app.settings,
     onStatus: (s) => { app.claudeStatus = s; updateStatus(); },
+    openEpisode: async (n) => { const e = app.project?.episodes.find((x) => String(x.n) === String(n)); if (e && e.path !== app.doc.path) await openPath(e.path); return !!e; },
+    flush: () => flushAll(),
+  });
+  app.sidebar = createSidebar({
+    root: $('#sidebar'),
+    getProject: () => app.project,
+    getCurrentPath: () => app.doc.path,
+    onOpen: (p, opts) => openPath(p, opts),
+    onChanged: () => reloadProject(),
+    actions: {
+      beforeFileChange: () => flushAll(),
+      analyzeSeries: () => { togglePanel('notas', true); app.panel.analyzeSeries(); },
+      saveDraft: saveProjectDraft,
+      drafts: showDrafts,
+      exportSeason,
+    },
   });
   $('#panel').addEventListener('setting', (e) => updateSettings(e.detail));
   $('#panel').addEventListener('undo', () => undo(app.view));
@@ -61,7 +78,7 @@ async function init() {
   const pending = platform.mode === 'desktop' ? await call('app.pendingOpen') : null;
   const list = await call('doc.list');
   if (pending) await openPath(pending);
-  else if (list.recent[0]) await openPath(list.recent[0].path);
+  else if (list.recent[0]) await openPath(list.recent[0].path, { silent: true });
   else await newDoc(true);
 
   loadSpeller();
@@ -137,22 +154,122 @@ async function languageTool(state) {
 
 function loadIntoEditor(d) {
   app.doc = { path: d.path, name: d.name, text: d.text, savedText: d.text, mtime: d.mtime };
+  editorConfig.mode = /\.(md|txt)$/i.test(d.path) ? 'plain' : 'script';
+  document.body.classList.toggle('plain-mode', editorConfig.mode === 'plain');
+  app.stats = null;
   setDoc(app.view, d.text);
   app.save = { state: 'saved', at: d.mtime, error: null };
-  document.title = `${d.name.replace(/\.fountain$/i, '')} — Cena`;
-  $('#docname').textContent = d.name.replace(/\.fountain$/i, '');
+  const shown = d.name.replace(/\.(fountain|md)$/i, '');
+  document.title = `${shown}${app.project ? ` — ${app.project.name}` : ''} — Cena`;
+  $('#docname').textContent = app.project ? `${app.project.name} · ${shown}` : shown;
+  app.sidebar.render();
   app.panel.loadProduction();
   updateStatus();
   app.view.focus();
   checkCloud();
 }
 
-async function openPath(p) {
+async function openPath(p, { silent = false } = {}) {
   await flushAll();
   try {
     if (/\.fdx$/i.test(p)) return importFDXFromPath(p);
-    loadIntoEditor(await call('doc.read', { path: p }));
+    const d = await call('doc.read', { path: p });
+    // o arquivo pertence a um projeto? carrega a barra lateral junto
+    if (d.project) { if (app.project?.dir !== d.project) app.project = await call('project.open', { dir: d.project }); }
+    else app.project = null;
+    loadIntoEditor(d);
+    if (d.project && !silent && !app.sidebarShownOnce) { document.body.classList.add('sidebar-open'); app.sidebarShownOnce = true; }
   } catch (e) { toast(`Não foi possível abrir: ${e.message}`, { error: true }); }
+}
+
+async function reloadProject() {
+  if (!app.project) return;
+  app.project = await call('project.open', { dir: app.project.dir });
+  app.sidebar.render();
+}
+
+// ---------------------------------------------------------------------------
+// Projetos (séries)
+
+async function newProject() {
+  const name = await prompt('Novo projeto (série)', 'Minha série', 'Nome da série. O Cena cria uma pasta com a bíblia e o primeiro episódio.');
+  if (!name) return;
+  await flushAll();
+  const p = await call('project.create', { name });
+  app.project = p;
+  await openPath(p.episodes[0].path);
+  document.body.classList.add('sidebar-open');
+  toast('Projeto criado. Ctrl+\\ mostra e esconde os episódios.', { ms: 6000 });
+}
+
+async function adoptFolder() {
+  if (platform.mode !== 'desktop') { toast('No modo navegador, crie o projeto pela biblioteca.'); return; }
+  const r = await call('dialog.pickFolder');
+  if (!r) return;
+  const p = await call('project.adopt', { dir: r.path });
+  app.project = p;
+  if (p.episodes[0]) await openPath(p.episodes[0].path); else if (p.bible) await openPath(p.bible);
+  document.body.classList.add('sidebar-open');
+  toast(`Pasta aberta como projeto: ${p.episodes.length} roteiro(s).`);
+}
+
+function toggleSidebar() {
+  if (!app.project) { toast('Abra ou crie um projeto (série) para ver os episódios.'); return; }
+  document.body.classList.toggle('sidebar-open');
+}
+
+async function saveProjectDraft() {
+  if (!app.project) return;
+  const label = await prompt('Salvar tratamento', 'Tratamento', 'Rótulo (a data entra automaticamente). Todos os roteiros e a bíblia são copiados para Tratamentos/.');
+  if (!label) return;
+  await flushAll();
+  const r = await call('project.saveDraft', { dir: app.project.dir, label });
+  toast(`Tratamento salvo: ${r.name} (${r.files.length} arquivos).`);
+}
+
+async function showDrafts() {
+  if (!app.project) return;
+  await flushAll();
+  const drafts = await call('project.drafts', { dir: app.project.dir });
+  if (!drafts.length) { toast('Ainda não há tratamentos. Use "Salvar tratamento".'); return; }
+  const curFile = app.doc.path?.split('/').pop();
+  const out = h('div', { class: 'draft-out' }, h('p', { class: 'muted' }, 'Escolha um tratamento e um arquivo.'));
+  let chosen = null;
+  const fileList = h('ul', {});
+  const pick = async (d, f) => {
+    chosen = { draft: d.name, file: f, text: (await call('project.readDraft', { dir: app.project.dir, draft: d.name, file: f })).text };
+    out.replaceChildren(
+      h('div', { class: 'row' },
+        h('b', {}, f.replace(/\.(fountain|md)$/i, '')), h('span', { class: 'muted small' }, ` em ${d.name}`), h('span', { class: 'grow' }),
+        f === curFile ? h('button', { onclick: () => compareDraft(chosen) }, 'O que mudou? (Claude)') : null,
+        f === curFile ? h('button', { onclick: async () => { m.close(); await saveNow({ snapshot: true }); setDoc(app.view, chosen.text); await saveNow({ snapshot: true }); toast('Versão do tratamento restaurada. A anterior está no histórico (Ctrl+K → Histórico).'); } }, 'Restaurar') : null),
+      h('pre', { class: 'preview' }, chosen.text.slice(0, 8000)));
+  };
+  const m = modal(`Tratamentos — ${app.project.name}`, h('div', { class: 'history' },
+    h('div', {}, drafts.map((d) => h('details', { open: d === drafts[0] }, h('summary', {}, d.name),
+      h('ul', {}, d.files.filter((f) => f !== 'cena.json').map((f) => h('li', {}, h('button', { class: `file ${f === curFile ? 'cur' : ''}`, onclick: () => pick(d, f) }, f.replace(/\.(fountain|md)$/i, '')))))))),
+    out), { wide: true });
+
+  async function compareDraft(c) {
+    const box = h('div', { class: 'compare', html: '<p class="muted pulse">Claude comparando as versões…</p>' });
+    out.replaceChildren(h('h3', {}, `${c.file.replace(/\.(fountain|md)$/i, '')}: ${c.draft} → agora`), box);
+    let md = '';
+    try {
+      await call('claude.compare', { path: app.doc.path, text: app.view.state.doc.toString(), oldText: c.text, label: c.draft }, (ev) => {
+        if (ev.type === 'text') { md += ev.text; box.innerHTML = miniMarkdown(md); }
+      });
+    } catch (e) { box.textContent = e.message; }
+  }
+}
+
+async function exportSeason() {
+  if (!app.project) return;
+  await flushAll();
+  try {
+    const out = await call('project.exportPdf', { dir: app.project.dir });
+    const r = await saveBytes(`${out.name} - temporada.pdf`, out.base64, 'pdf', out.mime);
+    if (r) toast(`Exportado: ${r.path}`);
+  } catch (e) { toast(`Erro ao exportar: ${e.message}`, { error: true }); }
 }
 
 async function newDoc(first = false) {
@@ -271,10 +388,17 @@ function updateReviewBar() {
 
 function updateStatus() {
   if (!app.view) return;
+  if (!app.stats && editorConfig.mode === 'plain') {
+    app.stats = { pages: 0, scenes: [], pageStarts: [], plain: true };
+    setPageBreaks(app.view, [], false);
+  }
   if (!app.stats) {
     try {
       app.stats = stats(app.view.state.doc.toString(), { paper: app.settings.paper, lang: app.settings.lang });
       setPageBreaks(app.view, app.stats.pageStarts, app.stats.hasTitle);
+      // mantém a contagem de páginas do episódio atualizada na barra lateral
+      const ep = app.project?.episodes.find((e) => e.path === app.doc.path);
+      if (ep && ep.pages !== app.stats.pages) { ep.pages = app.stats.pages; app.sidebar.render(); }
     } catch (e) { console.warn(e); app.stats = { pages: 0, scenes: [], pageStarts: [] }; }
   }
   // página em que está o cursor
@@ -285,8 +409,8 @@ function updateStatus() {
   const saveTxt = { saved: 'salvo', dirty: 'editando', saving: 'salvando…', error: 'erro ao salvar' }[app.save.state];
   const cloudTxt = { off: '', pending: 'nuvem ⋯', syncing: 'nuvem ⟳', synced: 'nuvem ✓', error: 'nuvem ⚠' }[app.cloud.state] || '';
   const parts = [
-    curPage ? `pág. ${curPage}/${app.stats.pages}` : `${app.stats.pages} pág.`,
-    sc.total ? (sc.index >= 0 ? `cena ${sc.index + 1}/${sc.total}` : `${sc.total} cenas`) : null,
+    app.stats.plain ? (app.project && app.doc.path === app.project.bible ? 'Bíblia da série' : 'texto') : curPage ? `pág. ${curPage}/${app.stats.pages}` : `${app.stats.pages} pág.`,
+    !app.stats.plain && sc.total ? (sc.index >= 0 ? `cena ${sc.index + 1}/${sc.total}` : `${sc.total} cenas`) : null,
     saveTxt,
     cloudTxt || null,
     app.claudeStatus || null,
@@ -361,19 +485,39 @@ async function openLibrary() {
   const list = await call('doc.list');
   const fmt = (f) => h('li', {}, h('button', { class: 'file', onclick: () => { m.close(); openPath(f.path); } },
     h('span', {}, f.name.replace(/\.fountain$/i, '')), h('span', { class: 'muted small' }, timeAgo(f.mtime))));
-  const recentPaths = new Set(list.recent.map((r) => r.path));
-  const m = modal('Abrir roteiro', h('div', { class: 'library' },
-    list.recent.length ? [h('h3', {}, 'Recentes'), h('ul', {}, list.recent.map(fmt))] : null,
+  const recentPaths = new Set(list.looseRecent.map((r) => r.path));
+  const projItem = (p) => h('li', {}, h('button', { class: 'file', onclick: async () => {
+    m.close();
+    const pj = await call('project.open', { dir: p.dir });
+    app.project = pj;
+    const last = list.recent.find((r) => r.path.startsWith(p.dir + '/'));
+    await openPath(last ? last.path : pj.episodes[0]?.path || pj.bible);
+    document.body.classList.add('sidebar-open');
+  } }, h('span', {}, '▤ ', p.name), h('span', { class: 'muted small' }, timeAgo(p.mtime))));
+  const m = modal('Abrir', h('div', { class: 'library' },
+    list.projects.length ? [h('h3', {}, 'Projetos (séries)'), h('ul', {}, list.projects.map(projItem))] : null,
+    list.looseRecent.length ? [h('h3', {}, 'Roteiros recentes'), h('ul', {}, list.looseRecent.map(fmt))] : null,
     h('h3', {}, 'Biblioteca'), h('p', { class: 'muted small path' }, list.library),
     h('ul', {}, list.files.filter((f) => !recentPaths.has(f.path)).map(fmt)),
     h('div', { class: 'row end' },
       h('button', { onclick: () => { m.close(); importFDX(); } }, platform.mode === 'desktop' ? 'Outro arquivo…' : 'Enviar arquivo (.fountain / .fdx)…'),
+      platform.mode === 'desktop' ? h('button', { onclick: () => { m.close(); adoptFolder(); } }, 'Abrir pasta como projeto…') : null,
+      h('button', { onclick: () => { m.close(); newProject(); } }, 'Novo projeto (série)'),
       h('button', { class: 'primary', onclick: () => { m.close(); newDoc(); } }, 'Novo roteiro'))));
 }
 
 const openDialog = () => openLibrary();
 
 async function renameDoc() {
+  const ep = app.project?.episodes.find((e) => e.path === app.doc.path);
+  if (ep) {
+    const t = await prompt('Renomear episódio', ep.title);
+    if (!t || t === ep.title) return;
+    await flushAll();
+    try { const r = await call('project.renameEpisode', { dir: app.project.dir, file: ep.file, title: t }); await reloadProject(); await openPath(r.path, { silent: true }); } catch (e) { toast(e.message, { error: true }); }
+    return;
+  }
+  if (app.project && app.doc.path === app.project.bible) { toast('A bíblia da série mantém o nome do arquivo.'); return; }
   const name = await prompt('Renomear roteiro', baseName());
   if (!name || name === baseName()) return;
   await flushAll();
@@ -433,9 +577,9 @@ function toggleFocus() {
   toast(app.focusMode ? 'Modo foco ativado (Ctrl+Shift+F11 para sair)' : 'Modo foco desativado', { ms: 1600 });
 }
 
-function togglePanel(tab) {
+function togglePanel(tab, force = false) {
   const open = document.body.classList.contains('panel-open');
-  if (open && (!tab || app.panelTab === tab)) { document.body.classList.remove('panel-open'); app.view.focus(); return; }
+  if (open && !force && (!tab || app.panelTab === tab)) { document.body.classList.remove('panel-open'); app.view.focus(); return; }
   document.body.classList.add('panel-open');
   if (tab) { app.panelTab = tab; app.panel.setTab(tab); }
 }
@@ -448,6 +592,7 @@ function showHelp() {
     ['Shift+Enter', 'quebra de linha simples'],
     ['Ctrl+B / Ctrl+I / Ctrl+U', 'negrito / itálico / sublinhado'],
     ['Ctrl+K', 'todos os comandos'],
+    ['Ctrl+\\', 'episódios do projeto (barra lateral)'],
     ['Ctrl+G', 'ir para cena'],
     ['Ctrl+J', 'painel do Claude'],
     ['Ctrl+Shift+L', 'conversar com o Claude'],
@@ -481,6 +626,18 @@ function showHelp() {
 const COMMANDS = () => [
   { label: 'Novo roteiro', key: 'Ctrl+N', run: () => newDoc() },
   { label: 'Abrir…', key: 'Ctrl+O', run: openDialog },
+  { label: 'Novo projeto (série)…', run: newProject },
+  ...(platform.mode === 'desktop' ? [{ label: 'Abrir pasta como projeto…', run: adoptFolder }] : []),
+  ...(app.project ? [
+    { label: 'Episódios (barra lateral)', key: 'Ctrl+\\', run: toggleSidebar },
+    { label: 'Novo episódio…', run: async () => { const t = await prompt('Novo episódio', `Episódio ${app.project.episodes.length + 1}`); if (!t) return; const r = await call('project.addEpisode', { dir: app.project.dir, title: t }); await reloadProject(); openPath(r.path); } },
+    { label: 'Bíblia da série', run: () => app.project.bible && openPath(app.project.bible) },
+    ...app.project.episodes.map((e) => ({ label: `Ir para o episódio ${e.n}: ${e.title}`, run: () => openPath(e.path) })),
+    { label: 'Claude: analisar a temporada (continuidade e arcos)', run: () => { togglePanel('notas', true); app.panel.analyzeSeries(); } },
+    { label: 'Salvar tratamento do projeto…', run: saveProjectDraft },
+    { label: 'Tratamentos (comparar e restaurar)…', run: showDrafts },
+    { label: 'Exportar PDF da temporada', run: exportSeason },
+  ] : []),
   { label: 'Renomear', run: renameDoc },
   { label: 'Salvar cópia como…', key: 'Ctrl+Shift+S', run: saveCopyAs },
   { label: 'Exportar PDF', key: 'Ctrl+E', run: () => exportAs('pdf') },
@@ -654,7 +811,7 @@ function bindKeys() {
     'ctrl+shift+l': () => { document.body.classList.add('panel-open'); app.panel.focusChat(); },
     'ctrl+shift+g': () => app.panel.grammar('scene'), 'ctrl+shift+i': fixAllFormatting,
     'ctrl+shift+e': () => app.panel.editPrompt('auto'),
-    'ctrl+,': openSettings, 'f1': showHelp, 'ctrl+shift+f11': toggleFocus,
+    'ctrl+,': openSettings, 'f1': showHelp, 'ctrl+shift+f11': toggleFocus, 'ctrl+\\': toggleSidebar,
     'f11': () => (platform.mode === 'desktop' ? call('window.fullscreen') : document.documentElement.requestFullscreen?.()),
   };
   addEventListener('keydown', (e) => {
@@ -664,6 +821,7 @@ function bindKeys() {
   }, true);
   $('#docname').addEventListener('click', renameDoc);
   $('#hint-k').addEventListener('click', () => palette());
+  $('#sidebar-tab').addEventListener('click', toggleSidebar);
   $('#status').addEventListener('click', () => palette());
 }
 

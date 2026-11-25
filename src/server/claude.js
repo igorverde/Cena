@@ -16,7 +16,11 @@ Seu papel é o de um consultor de roteiro e de um primeiro assistente de direç�
 - respeite a voz, o estilo e as escolhas do autor; aponte problemas concretos e úteis, nunca genéricos;
 - cite trechos exatamente como estão no texto quando pedirem um trecho;
 - escreva no idioma do roteiro (português do Brasil, salvo se o roteiro estiver em outro idioma);
-- seja conciso: o autor está escrevendo e lê suas notas de relance.`;
+- seja conciso: o autor está escrevendo e lê suas notas de relance.
+
+Quando houver um <projeto>, o roteiro faz parte de uma obra seriada: a <biblia_da_serie> é o cânone
+(personagens, arcos, regras do mundo) e os outros <episodio> são o resto da temporada. Use-os para
+continuidade entre episódios, arcos, ganchos, plantar e pagar, e para manter vozes consistentes.`;
 
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
@@ -104,9 +108,15 @@ export async function check(cfg, ctx) {
   return { ok: true, via: 'API', reply: r.text.trim().slice(0, 40) };
 }
 
-const scriptBlock = (text) => ({
+// obra seriada (bíblia + outros episódios) vem antes do roteiro atual, ambos em cache
+const docBlocks = (text, series) => [
+  ...(series ? [{ type: 'text', text: series, cache_control: { type: 'ephemeral' } }] : []),
+  scriptBlock(text, !!series),
+];
+
+const scriptBlock = (text, inSeries = false) => ({
   type: 'text',
-  text: `<roteiro>\n${text}\n</roteiro>`,
+  text: inSeries ? `<roteiro episodio_atual="sim">\n${text}\n</roteiro>` : `<roteiro>\n${text}\n</roteiro>`,
   cache_control: { type: 'ephemeral' },
 });
 
@@ -121,6 +131,7 @@ const NOTE_KINDS = ['estrutura', 'personagem', 'dialogo', 'ritmo', 'continuidade
 const analysisSchema = obj({
   summary: str,
   notes: arr(obj({
+    episode: str,
     scene: str,
     quote: str,
     kind: { type: 'string', enum: NOTE_KINDS },
@@ -130,7 +141,7 @@ const analysisSchema = obj({
   })),
 });
 
-export async function analyze(cfg, { text, scope = 'scene', sceneText, sceneNumber, paper, lang }, ctx) {
+export async function analyze(cfg, { text, series, scope = 'scene', sceneText, sceneNumber, paper, lang }, ctx) {
   const st = stats(text, { paper, lang });
   const task = scope === 'scene'
     ? `O autor está escrevendo agora a cena ${sceneNumber || ''}. Analise apenas esta cena, no contexto do roteiro inteiro:
@@ -143,13 +154,20 @@ Devolva no máximo 5 notas, só as que realmente importam (problemas de lógica,
 diálogo expositivo ou fora da voz do personagem, ritmo, formatação Fountain incorreta, erros de português).
 Em "quote" copie literalmente um trecho curto (até 80 caracteres) da cena ao qual a nota se refere.
 "summary" é uma frase sobre o que a cena faz pela história.`
+    : scope === 'series' ? `Analise a OBRA SERIADA como um todo, como um showrunner experiente. Use a bíblia e todos os episódios
+(o roteiro aberto no editor é o episódio marcado como atual). Aponte: furos de continuidade entre episódios (fatos, datas,
+objetos, quem sabe o quê), personagens que mudam de voz ou de motivação sem razão, arcos que somem ou não se pagam,
+plantar e pagar, repetição de cenas ou informações, ganchos de fim de episódio fracos, e desvios da bíblia.
+Devolva até 25 notas ordenadas pela importância. Em "episode" ponha o número do episódio (ex.: "3"), em "scene" o
+número da cena dentro dele, e em "quote" um trecho curto (até 80 caracteres) copiado literalmente desse episódio.
+"summary" é um parágrafo sobre a temporada: o que funciona, o arco geral e o principal problema.`
     : `Faça uma análise completa do roteiro como consultor: estrutura (atos, pontos de virada), arcos dos personagens,
 ritmo, diálogo, continuidade e viabilidade de produção. Devolva até 25 notas ordenadas pela importância.
 Em "quote" copie literalmente um trecho curto (até 80 caracteres) do roteiro, e em "scene" o número da cena.
 "summary" é um parágrafo de avaliação geral (logline percebida, pontos fortes, principal problema).`;
   return run({
     cfg,
-    content: [scriptBlock(text), { type: 'text', text: `<cenas>\n${sceneTable(st)}\n</cenas>` }, { type: 'text', text: task }],
+    content: [...docBlocks(text, series), { type: 'text', text: `<cenas>\n${sceneTable(st)}\n</cenas>` }, { type: 'text', text: task }],
     schema: analysisSchema,
     effort: scope === 'scene' ? 'low' : 'high',
     maxTokens: scope === 'scene' ? 8000 : 32000,
@@ -212,11 +230,11 @@ const breakdownSchema = obj({
   locations: arr(obj({ name: str, scenes: arr(str), notes: str })),
 });
 
-export async function breakdown(cfg, { text, paper, lang }, ctx) {
+export async function breakdown(cfg, { text, series, paper, lang }, ctx) {
   const st = stats(text, { paper, lang });
   return run({
     cfg,
-    content: [scriptBlock(text), { type: 'text', text: `<cenas>\n${sceneTable(st)}\n</cenas>` }, {
+    content: [...docBlocks(text, series), { type: 'text', text: `<cenas>\n${sceneTable(st)}\n</cenas>` }, {
       type: 'text',
       text: `Faça a decupagem de produção (breakdown) de TODAS as cenas, na ordem, usando o número de cada cena da tabela.
 Para cada cena liste: elenco com fala ou ação (cast), figuração (extras, com quantidade estimada), objetos de cena (props),
@@ -250,7 +268,7 @@ const scheduleSchema = obj({
   warnings: arr(str),
 });
 
-export async function schedule(cfg, { text, paper, lang, params = {} }, ctx) {
+export async function schedule(cfg, { text, series, paper, lang, params = {} }, ctx) {
   const st = stats(text, { paper, lang });
   const p = {
     startDate: params.startDate || '',
@@ -262,7 +280,7 @@ export async function schedule(cfg, { text, paper, lang, params = {} }, ctx) {
   };
   const res = await run({
     cfg,
-    content: [scriptBlock(text), { type: 'text', text: `<cenas>\n${sceneTable(st)}\n</cenas>` }, {
+    content: [...docBlocks(text, series), { type: 'text', text: `<cenas>\n${sceneTable(st)}\n</cenas>` }, {
       type: 'text',
       text: `Monte o plano de filmagem (ordem do dia por diária) para este roteiro, como um primeiro assistente de direção.
 Parâmetros da produção:
@@ -314,7 +332,7 @@ const editSchema = obj({
   edits: arr(obj({ original: str, replacement: str, reason: str })),
 });
 
-export async function edit(cfg, { text, scopeText, scopeLabel, instruction, history = [] }, ctx) {
+export async function edit(cfg, { text, series, scopeText, scopeLabel, instruction, history = [] }, ctx) {
   const whole = !scopeText || scopeText === text;
   const convo = history.length
     ? `\n<conversa_anterior>\n${history.map((m) => `${m.role === 'user' ? 'AUTOR' : 'VOCÊ'}: ${m.content}`).join('\n\n')}\n</conversa_anterior>\n`
@@ -336,7 +354,7 @@ Mude só o que o pedido exige e preserve a voz do autor. "summary" diz em uma ou
 Se o pedido for só uma pergunta e não pedir mudança, responda em "summary" e devolva "edits" vazio.`;
   return run({
     cfg,
-    content: [scriptBlock(text), { type: 'text', text: task }],
+    content: [...docBlocks(text, series), { type: 'text', text: task }],
     schema: editSchema,
     effort: whole ? 'high' : 'medium',
     maxTokens: 64000,
@@ -346,12 +364,36 @@ Se o pedido for só uma pergunta e não pedir mudança, responda em "summary" e 
 }
 
 // ---------------------------------------------------------------------------
+// Comparação entre tratamentos (versões)
+
+export async function compare(cfg, { text, oldText, label, series }, ctx) {
+  return run({
+    cfg,
+    content: [
+      ...(series ? [{ type: 'text', text: series, cache_control: { type: 'ephemeral' } }] : []),
+      { type: 'text', text: `<versao_anterior rotulo="${label || 'tratamento anterior'}">\n${oldText}\n</versao_anterior>` },
+      { type: 'text', text: `<versao_atual>\n${text}\n</versao_atual>` },
+      { type: 'text', text: `Compare as duas versões deste roteiro como um editor de roteiro faria numa reunião de tratamento.
+Responda em Markdown curto, nesta ordem:
+1. **O que mudou**: as mudanças de história, estrutura e personagens (não liste correções miúdas uma a uma; agrupe).
+2. **O que melhorou** e **o que piorou ou se perdeu** (falas, informações ou cenas boas que sumiram).
+3. **Efeitos em cascata**: o que essa mudança exige ajustar em outras cenas${series ? ' ou em outros episódios e na bíblia' : ''}.
+Cite cenas pelo cabeçalho. Se as versões forem iguais, diga só isso.` },
+    ],
+    effort: 'medium',
+    maxTokens: 16000,
+    onText: ctx.emit ? (t) => ctx.emit({ type: 'text', text: t }) : undefined,
+    signal: ctx.signal,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Conversa livre sobre o roteiro (streaming)
 
-export async function chat(cfg, { text, history }, ctx) {
+export async function chat(cfg, { text, series, history }, ctx) {
   const messages = history.map((m, i) => ({
     role: m.role,
-    content: i === 0 && m.role === 'user' ? [scriptBlock(text), { type: 'text', text: m.content }] : m.content,
+    content: i === 0 && m.role === 'user' ? [...docBlocks(text, series), { type: 'text', text: m.content }] : m.content,
   }));
   return run({ cfg, messages, effort: 'medium', maxTokens: 32000, onText: (t) => ctx.emit({ type: 'text', text: t }), signal: ctx.signal });
 }

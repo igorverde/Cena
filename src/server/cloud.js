@@ -4,6 +4,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { projectOf } from './project.js';
 
 export const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -12,11 +13,12 @@ class WebDAV {
     if (!url) throw new Error('Informe a URL WebDAV.');
     this.base = url.endsWith('/') ? url : url + '/';
     this.auth = username ? 'Basic ' + Buffer.from(`${username}:${password || ''}`).toString('base64') : null;
+    this.dirs = new Set();
   }
   async req(method, name, { body, headers = {} } = {}) {
     const h = { ...headers };
     if (this.auth) h.Authorization = this.auth;
-    const url = this.base + (name ? encodeURIComponent(name) : '');
+    const url = this.base + (name ? name.split('/').map(encodeURIComponent).join('/') : '');
     const res = await fetch(url, { method, body, headers: h, signal: AbortSignal.timeout(20000) });
     return res;
   }
@@ -43,7 +45,19 @@ class WebDAV {
     if (!res.ok) throw new Error(`GET ${res.status}`);
     return { text: await res.text(), etag: res.headers.get('etag') };
   }
+  // cria as subpastas remotas (projetos e tratamentos)
+  async ensureDirs(name) {
+    const parts = name.split('/').slice(0, -1);
+    for (let i = 1; i <= parts.length; i++) {
+      const d = parts.slice(0, i).join('/') + '/';
+      if (this.dirs.has(d)) continue;
+      const r = await this.req('MKCOL', d);
+      if (!r.ok && r.status !== 405 && r.status !== 301) throw new Error(`MKCOL ${r.status}`); // 405: já existe
+      this.dirs.add(d);
+    }
+  }
   async put(name, text, etag) {
+    if (name.includes('/')) await this.ensureDirs(name);
     const headers = { 'Content-Type': 'text/plain; charset=utf-8' };
     if (etag) headers['If-Match'] = etag;
     const res = await this.req('PUT', name, { body: text, headers });
@@ -80,7 +94,7 @@ class Folder {
   async put(name, text, etag) {
     const p = path.join(this.dir, name);
     if (etag) { const cur = await this.stat(name); if (cur && cur.etag !== etag) return { conflict: true }; }
-    await fs.mkdir(this.dir, { recursive: true });
+    await fs.mkdir(path.dirname(p), { recursive: true });
     const tmp = p + '.tmp-cena';
     await fs.writeFile(tmp, text); await fs.rename(tmp, p);
     return { etag: sha(text) };
@@ -109,7 +123,12 @@ export class CloudSync {
     await fs.mkdir(path.dirname(this.stateFile), { recursive: true });
     await fs.writeFile(this.stateFile, JSON.stringify(this.state, null, 1));
   }
-  remoteName(localPath) { return path.basename(localPath); }
+  /** Nome remoto: arquivos de projeto ficam em "<Projeto>/<arquivo>" (inclusive Tratamentos/). */
+  remoteName(localPath) {
+    const proj = projectOf(localPath);
+    if (!proj) return path.basename(localPath);
+    return path.relative(path.dirname(proj), path.resolve(localPath)).split(path.sep).join('/');
+  }
 
   /** Envia o texto para a nuvem. Em caso de conflito, guarda a versão remota ao lado do arquivo local. */
   push(cfg, localPath, text) {

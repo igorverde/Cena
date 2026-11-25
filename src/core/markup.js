@@ -85,6 +85,7 @@ export function elementMarkers(type, text) {
     case 'lyrics': if (t.startsWith('~')) push(lead, lead + 1); break;
     case 'synopsis': { const m = t.match(/^=\s*/); if (m) push(lead, lead + m[0].length); break; }
     case 'section': { const m = t.match(/^#+\s*/); if (m) push(lead, lead + m[0].length); break; }
+    case 'mdh': { const m = t.match(/^#+\s*/); if (m) push(lead, lead + m[0].length); break; }
     default: break;
   }
   return hide;

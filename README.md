@@ -19,6 +19,29 @@ Editor de roteiro para cinema, minimalista, feito para Linux.
   - **conversa** sobre o roteiro;
   - **edição do texto pelo Claude**: selecione um trecho (ou fique numa cena) e peça a mudança com `Ctrl+Shift+E`, ou marque *Editar o texto* na conversa. As alterações aparecem no próprio texto, com o trecho removido riscado e o novo em verde. Aceite ou rejeite uma a uma (✓/✗) ou todas de uma vez. Se preferir, ative *Aplicar as edições direto* nas configurações; `Ctrl+Z` sempre desfaz.
 
+## Séries: projetos com vários roteiros
+
+Um **projeto** é uma pasta com todos os roteiros da obra, na versão mais recente, mais a bíblia da série:
+
+```
+Minha Série/
+├── cena.json              ordem dos episódios (JSON legível)
+├── Bíblia da série.md     personagens, arcos, regras do mundo
+├── 01 - Piloto.fountain
+├── 02 - O Projetor.fountain
+├── Tratamentos/           cópias congeladas da obra inteira, por data e rótulo
+└── Arquivados/            episódios retirados do projeto (nada é apagado)
+```
+
+- **Criar:** `Ctrl+O` → *Novo projeto (série)*, ou *Abrir pasta como projeto…* para uma pasta que já tem seus `.fountain`.
+- **Barra lateral oculta:** `Ctrl+\` (ou o ☰ no canto) mostra os episódios com o número de páginas. Adicione, renomeie, reordene (os arquivos são renumerados, inclusive na página de rosto) e retire episódios.
+- **O Claude enxerga a obra inteira:** conversa, edição e análises recebem a bíblia e todos os episódios. Notas em tempo real usam só a bíblia, para poupar o limite da assinatura.
+- **Analisar a temporada:** notas sobre continuidade entre episódios, arcos, ganchos, plantar e pagar e desvios da bíblia. Clicar numa nota abre o episódio certo no trecho citado.
+- **Tratamentos:** *Salvar tratamento* congela uma cópia de tudo. Em *Tratamentos…* você vê, restaura ou pede ao Claude **"O que mudou?"** entre o tratamento e a versão atual.
+- **Listas da temporada:** personagens × episódios (falas por episódio) e locações × episódios.
+- **PDF da temporada:** todos os episódios num só PDF, cada um começando numa página nova.
+- **Nuvem:** o projeto vai inteiro para uma subpasta com o nome dele, tratamentos incluídos.
+
 ## Instalar e rodar
 
 Precisa do Node.js 20 ou mais novo.
@@ -82,6 +105,7 @@ Abra o endereço que aparece no terminal (o link já inclui uma chave de acesso;
 | `Ctrl+B` / `Ctrl+I` / `Ctrl+U` | negrito / itálico / sublinhado |
 | `Ctrl+Shift+E` | pedir ao Claude para editar a seleção ou a cena |
 | `Ctrl+K` | todos os comandos |
+| `Ctrl+\` | episódios do projeto (barra lateral) |
 | `Ctrl+G` | ir para cena |
 | `Ctrl+J` | painel do Claude |
 | `Ctrl+Shift+L` | conversar com o Claude |
